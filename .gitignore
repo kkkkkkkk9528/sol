@@ -1,0 +1,45 @@
+node_modules/
+.anchor/
+test-ledger/
+target/
+programs/*/target/
+**/*.log
+
+*.so
+**/build/
+**/.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secret files
+*.env
+*.local
+
+# Misc
+*.pem
+coverage/
+dist/
+vendor/
+解决问题文档记录/
+
+# System directories (if repo ever includes them)
+/boot
+/dev
+/etc
+/home
+/lib
+/lib64
+/media
+/mnt
+/opt
+/proc
+/root
+/run
+/srv
+/sys
+/tmp
+/var
