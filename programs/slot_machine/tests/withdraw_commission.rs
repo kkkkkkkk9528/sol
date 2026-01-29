@@ -100,7 +100,7 @@ async fn withdraw_commission_transfers_exact_amount_and_resets_state() {
         },
     );
 
-    let mut game_state_data = vec![0u8; 8 + 4096];
+    let mut game_state_data = vec![0u8; 8 + slot_machine::GameState::SPACE];
     {
         let mut cursor = std::io::Cursor::new(&mut game_state_data[..]);
         let state = slot_machine::GameState {
@@ -123,11 +123,13 @@ async fn withdraw_commission_transfers_exact_amount_and_resets_state() {
             commission_rate: 10,
             stake_threshold: 1_000_000,
             settlement_period: 86_400,
-            rng: slot_machine::XorshiftRng::default(),
+            vrf: Pubkey::default(),
+            vrf_result_offset: 0,
             symbol_weights: [2500, 2500, 250, 1600, 2150, 1000],
             payout_triple: [220, 180, 2000, 360, 450, 0],
             payout_double: [65, 50, 100, 75, 85, 0],
             max_auto_spins: 5,
+            min_bet: 1,
         };
         state.try_serialize(&mut cursor).unwrap();
     }

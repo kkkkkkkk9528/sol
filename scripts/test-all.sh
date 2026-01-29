@@ -6,6 +6,7 @@ cd "$repo_root"
 
 if [[ "${SBF_SKIP_BUILD:-0}" != "1" ]]; then
   cargo-build-sbf --manifest-path programs/slot_machine/Cargo.toml
+  cargo-build-sbf --manifest-path programs/slot_machine_token/Cargo.toml
 fi
 
 anchor test --skip-build

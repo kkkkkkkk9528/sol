@@ -17,10 +17,18 @@ describe("slot_machine_optimized", () => {
   anchor.setProvider(provider);
 
   let program: Program;
-  const programId = new anchor.web3.PublicKey("GtSdwriBEDSUrrdxx1tHA1TV8aAgA9bSKcPmeYCUQhBg");
+  const programId = new anchor.web3.PublicKey("8cozexydPUo9jTBT7PRWVe5Qmi3bpkjgQuPo2ZaTKHus");
 
   before(async () => {
     const idl = JSON.parse(fs.readFileSync(path.join(process.cwd(), "target/idl/slot_machine.json"), "utf8"));
+    const typesByName = new Map((idl.types ?? []).map((t: any) => [t.name, t.type]));
+    for (const acc of idl.accounts ?? []) {
+      if (!acc.type) {
+        const t = typesByName.get(acc.name);
+        if (t) acc.type = t;
+      }
+    }
+    idl.address = programId.toBase58();
     program = new Program(idl, provider);
   });
   
@@ -31,12 +39,18 @@ describe("slot_machine_optimized", () => {
   let ownerTokenAccount: anchor.web3.PublicKey;
   let playerTokenAccount: anchor.web3.PublicKey;
   let agentTokenAccount: anchor.web3.PublicKey;
+  let vrf: Keypair;
   
   const owner = provider.wallet;
+  const payer = (owner as any).payer as Keypair;
   const player = Keypair.generate();
   const agent = Keypair.generate();
 
   before(async () => {
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(owner.publicKey, 5 * LAMPORTS_PER_SOL)
+    );
+
     // 查找 PDA
     [gameState, gameStateBump] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("game_state")],
@@ -45,7 +59,7 @@ describe("slot_machine_optimized", () => {
 
     let gameStateAccount: any;
     try {
-      gameStateAccount = await program.account.gameState.fetch(gameState);
+      gameStateAccount = await (program.account as any).gameState.fetch(gameState);
     } catch {
       gameStateAccount = null;
     }
@@ -54,9 +68,9 @@ describe("slot_machine_optimized", () => {
       mint = gameStateAccount.poolMint as anchor.web3.PublicKey;
       poolTokenAccount = gameStateAccount.poolTokenAccount as anchor.web3.PublicKey;
     } else {
-      mint = await createMint(provider.connection, owner.payer, owner.publicKey, null, 6);
+      mint = await createMint(provider.connection, payer, owner.publicKey, null, 6);
       poolTokenAccount = (
-        await getOrCreateAssociatedTokenAccount(provider.connection, owner.payer, mint, gameState, true)
+        await getOrCreateAssociatedTokenAccount(provider.connection, payer, mint, gameState, true)
       ).address;
 
       await program.methods
@@ -74,7 +88,7 @@ describe("slot_machine_optimized", () => {
     ownerTokenAccount = (
       await getOrCreateAssociatedTokenAccount(
         provider.connection,
-        owner.payer,
+        payer,
         mint,
         owner.publicKey
       )
@@ -83,7 +97,7 @@ describe("slot_machine_optimized", () => {
     playerTokenAccount = (
       await getOrCreateAssociatedTokenAccount(
         provider.connection,
-        owner.payer,
+        payer,
         mint,
         player.publicKey
       )
@@ -92,7 +106,7 @@ describe("slot_machine_optimized", () => {
     agentTokenAccount = (
       await getOrCreateAssociatedTokenAccount(
         provider.connection,
-        owner.payer,
+        payer,
         mint,
         agent.publicKey
       )
@@ -116,7 +130,7 @@ describe("slot_machine_optimized", () => {
     // 给玩家铸造 Token
     await mintTo(
       provider.connection,
-      owner.payer,
+      payer,
       mint,
       playerTokenAccount,
       owner.publicKey,
@@ -126,17 +140,44 @@ describe("slot_machine_optimized", () => {
     // 给奖池铸造 Token
     await mintTo(
       provider.connection,
-      owner.payer,
+      payer,
       mint,
       poolTokenAccount,
       owner.publicKey,
       10000000000 // 10000 Token
     );
+
+    vrf = Keypair.generate();
+    const vrfSpace = 64;
+    const vrfRent = await provider.connection.getMinimumBalanceForRentExemption(vrfSpace);
+    const switchboardV2ProgramId = new anchor.web3.PublicKey(
+      "SW1TCH7qEPTdLsDHRgPuMQjbQxKdH2aBStViMFnt64f"
+    );
+    await provider.sendAndConfirm(
+      new anchor.web3.Transaction().add(
+        anchor.web3.SystemProgram.createAccount({
+          fromPubkey: owner.publicKey,
+          newAccountPubkey: vrf.publicKey,
+          lamports: vrfRent,
+          space: vrfSpace,
+          programId: switchboardV2ProgramId,
+        })
+      ),
+      [vrf]
+    );
+
+    await program.methods
+      .setVrf(vrf.publicKey, 0)
+      .accounts({
+        gameState,
+        owner: owner.publicKey,
+      })
+      .rpc();
   });
 
   describe("初始化", () => {
     it("应该成功初始化游戏状态", async () => {
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
       
       expect(gameStateAccount.owner.toString()).to.equal(owner.publicKey.toString());
       expect(gameStateAccount.poolMint.toString()).to.equal(mint.toString());
@@ -162,7 +203,7 @@ describe("slot_machine_optimized", () => {
         })
         .rpc();
 
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
       expect(gameStateAccount.symbolWeights).to.deep.equal(newWeights);
     });
 
@@ -192,7 +233,7 @@ describe("slot_machine_optimized", () => {
         })
         .rpc();
 
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
       expect(gameStateAccount.commissionRate).to.equal(15);
     });
 
@@ -205,8 +246,29 @@ describe("slot_machine_optimized", () => {
         })
         .rpc();
 
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
       expect(gameStateAccount.stakeThreshold.toNumber()).to.equal(2000000);
+    });
+
+    it("应该允许所有者设置最低下注额", async () => {
+      await program.methods
+        .setMinBet(new BN(2_000_000))
+        .accounts({
+          gameState,
+          owner: owner.publicKey,
+        })
+        .rpc();
+
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
+      expect(gameStateAccount.minBet.toString()).to.equal("2000000");
+
+      await program.methods
+        .setMinBet(new BN(1))
+        .accounts({
+          gameState,
+          owner: owner.publicKey,
+        })
+        .rpc();
     });
   });
 
@@ -224,7 +286,7 @@ describe("slot_machine_optimized", () => {
         .signers([agent])
         .rpc();
 
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
       expect(gameStateAccount.agents.length).to.equal(1);
       expect(gameStateAccount.agents[0].pubkey.toString()).to.equal(agent.publicKey.toString());
       expect(gameStateAccount.agents[0].roomCard.toNumber()).to.equal(10000);
@@ -254,7 +316,7 @@ describe("slot_machine_optimized", () => {
           .rpc();
         expect.fail("应该抛出错误");
       } catch (error) {
-        expect(error.message).to.include("StakeTooLow");
+        expect(error.message).to.include("StakeBelowThreshold");
       }
     });
 
@@ -272,9 +334,11 @@ describe("slot_machine_optimized", () => {
         .rpc();
 
       const balanceAfter = await provider.connection.getBalance(agent.publicKey);
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
 
-      expect(gameStateAccount.agents[0].isActive).to.be.false;
+      expect(gameStateAccount.agents[0].stake.toString()).to.equal("0");
+      expect(gameStateAccount.agents[0].roomCard.toNumber()).to.equal(0);
+      expect(gameStateAccount.agents[0].commission.toString()).to.equal("0");
       expect(balanceAfter).to.be.greaterThan(balanceBefore);
     });
   });
@@ -303,195 +367,133 @@ describe("slot_machine_optimized", () => {
         .signers([activeAgent])
         .rpc();
 
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
       activeAgentRoomCard = gameStateAccount.agents.find(
         (a) => a.pubkey.toString() === activeAgent.publicKey.toString() && a.isActive
       ).roomCard.toNumber();
     });
 
-    it("应该允许玩家下注并游戏", async () => {
+    it("request_play/settle_play: settle 在 VRF 未更新时失败", async () => {
+      const pendingPlay = Keypair.generate();
       const bets = [new BN(1_000_000), new BN(0), new BN(0), new BN(0), new BN(0), new BN(0)];
 
-      const poolBalanceBefore = (
-        await provider.connection.getTokenAccountBalance(poolTokenAccount)
-      ).value.amount;
-
-      const tx = await program.methods
-        .play(bets, new BN(activeAgentRoomCard))
+      await program.methods
+        .requestPlay(bets, new BN(activeAgentRoomCard))
         .accounts({
           gameState,
+          pendingPlay: pendingPlay.publicKey,
           player: player.publicKey,
           playerTokenAccount,
           poolTokenAccount,
           tokenProgram: TOKEN_PROGRAM_ID,
+          vrf: vrf.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
         })
-        .signers([player])
+        .signers([player, pendingPlay])
         .rpc();
 
-      console.log("游戏交易签名:", tx);
-
-      const poolBalanceAfter = (
-        await provider.connection.getTokenAccountBalance(poolTokenAccount)
-      ).value.amount;
-
-      expect(BigInt(poolBalanceAfter) > BigInt(poolBalanceBefore)).to.be.true;
-
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
-      expect(gameStateAccount.nonce.toNumber()).to.be.greaterThan(0);
-    });
-
-    it("应该允许玩家按符号分别下注，并仅按命中符号下注额派彩", async () => {
-      const betOnCherry = [new BN(1_000_000), new BN(0), new BN(0), new BN(0), new BN(0), new BN(0)];
-      const betOnLemon = [new BN(0), new BN(1_000_000), new BN(0), new BN(0), new BN(0), new BN(0)];
-      const deterministicWeights = [10000, 0, 0, 0, 0, 0];
-      const deterministicPayoutTriple = [500, 0, 0, 0, 0, 0];
-      const deterministicPayoutDouble = [0, 0, 0, 0, 0, 0];
-
-      await program.methods
-        .setSymbolWeights(deterministicWeights)
-        .accounts({
-          gameState,
-          owner: owner.publicKey,
-        })
-        .rpc();
-
-      await program.methods
-        .setPayoutTriple(deterministicPayoutTriple)
-        .accounts({
-          gameState,
-          owner: owner.publicKey,
-        })
-        .rpc();
-
-      await program.methods
-        .setPayoutDouble(deterministicPayoutDouble)
-        .accounts({
-          gameState,
-          owner: owner.publicKey,
-        })
-        .rpc();
-
-      await program.methods
-        .syncPoolTotal()
-        .accounts({
-          gameState,
-          owner: owner.publicKey,
-          poolTokenAccount,
-        })
-        .rpc();
-
-      const playerBefore = (
-        await provider.connection.getTokenAccountBalance(playerTokenAccount)
-      ).value.amount;
-
-      await program.methods
-        .play(betOnCherry, new BN(activeAgentRoomCard))
-        .accounts({
-          gameState,
-          player: player.publicKey,
-          playerTokenAccount,
-          poolTokenAccount,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([player])
-        .rpc();
-
-      const playerAfterWin = (
-        await provider.connection.getTokenAccountBalance(playerTokenAccount)
-      ).value.amount;
-
-      expect(BigInt(playerAfterWin) - BigInt(playerBefore)).to.equal(4000000n);
-
-      await program.methods
-        .play(betOnLemon, new BN(activeAgentRoomCard))
-        .accounts({
-          gameState,
-          player: player.publicKey,
-          playerTokenAccount,
-          poolTokenAccount,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([player])
-        .rpc();
-
-      const playerAfterLose = (
-        await provider.connection.getTokenAccountBalance(playerTokenAccount)
-      ).value.amount;
-
-      expect(BigInt(playerAfterLose) - BigInt(playerAfterWin)).to.equal(-1000000n);
-
-      const restoreWeights = [2000, 2000, 500, 1500, 2000, 2000];
-      const restorePayoutTriple = [220, 180, 2000, 360, 450, 0];
-      const restorePayoutDouble = [65, 50, 100, 75, 85, 0];
-
-      await program.methods
-        .setSymbolWeights(restoreWeights)
-        .accounts({
-          gameState,
-          owner: owner.publicKey,
-        })
-        .rpc();
-
-      await program.methods
-        .setPayoutTriple(restorePayoutTriple)
-        .accounts({
-          gameState,
-          owner: owner.publicKey,
-        })
-        .rpc();
-
-      await program.methods
-        .setPayoutDouble(restorePayoutDouble)
-        .accounts({
-          gameState,
-          owner: owner.publicKey,
-        })
-        .rpc();
-    });
-
-    it("应该正确计算代理商佣金", async () => {
-      const bets = [new BN(10_000_000), new BN(0), new BN(0), new BN(0), new BN(0), new BN(0)];
-
-      // 多次游戏以累积佣金
-      for (let i = 0; i < 5; i++) {
+      try {
         await program.methods
-          .play(bets, new BN(activeAgentRoomCard))
+          .settlePlay()
           .accounts({
             gameState,
+            pendingPlay: pendingPlay.publicKey,
             player: player.publicKey,
             playerTokenAccount,
             poolTokenAccount,
             tokenProgram: TOKEN_PROGRAM_ID,
+            vrf: vrf.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
           })
-          .signers([player])
           .rpc();
+        expect.fail("应该抛出错误");
+      } catch (error) {
+        expect(error.message).to.include("VrfNotUpdated");
       }
-
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
-      const agentData = gameStateAccount.agents.find(
-        (a) => a.pubkey.toString() === activeAgent.publicKey.toString()
-      );
-
-      console.log("代理商佣金:", agentData.commission.toString());
-      // 佣金可能为正或负，取决于玩家输赢
     });
 
-    it("应该允许玩家不使用房卡游戏", async () => {
+    it("request_play 会把下注转入奖池并创建 PendingPlay；settle_play 在 VRF 未更新时失败", async () => {
+      const pendingPlay = Keypair.generate();
       const bets = [new BN(1_000_000), new BN(0), new BN(0), new BN(0), new BN(0), new BN(0)];
 
+      const playerBefore = (
+        await provider.connection.getTokenAccountBalance(playerTokenAccount)
+      ).value.amount;
+      const poolBefore = (await provider.connection.getTokenAccountBalance(poolTokenAccount)).value.amount;
+
       await program.methods
-        .play(bets, null)
+        .requestPlay(bets, null)
         .accounts({
           gameState,
+          pendingPlay: pendingPlay.publicKey,
           player: player.publicKey,
           playerTokenAccount,
           poolTokenAccount,
           tokenProgram: TOKEN_PROGRAM_ID,
+          vrf: vrf.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
         })
-        .signers([player])
+        .signers([player, pendingPlay])
         .rpc();
 
-      // 不应该抛出错误
+      const playerAfterRequest = (
+        await provider.connection.getTokenAccountBalance(playerTokenAccount)
+      ).value.amount;
+      const poolAfterRequest = (
+        await provider.connection.getTokenAccountBalance(poolTokenAccount)
+      ).value.amount;
+
+      expect(BigInt(playerAfterRequest)).to.equal(BigInt(playerBefore) - 1_000_000n);
+      expect(BigInt(poolAfterRequest)).to.equal(BigInt(poolBefore) + 1_000_000n);
+
+      const pending = await (program.account as any).pendingPlay.fetch(pendingPlay.publicKey);
+      expect(pending.player.toString()).to.equal(player.publicKey.toString());
+      expect(pending.totalBet.toString()).to.equal("1000000");
+      expect(pending.hasRoomCard).to.equal(false);
+
+      try {
+        await program.methods
+          .settlePlay()
+          .accounts({
+            gameState,
+            pendingPlay: pendingPlay.publicKey,
+            player: player.publicKey,
+            playerTokenAccount,
+            poolTokenAccount,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            vrf: vrf.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("应该抛出错误");
+      } catch (error) {
+        expect(error.message).to.include("VrfNotUpdated");
+      }
+    });
+
+    it("request_play 应拒绝对 DOUBLE 符号下注", async () => {
+      const pendingPlay = Keypair.generate();
+      const bets = [new BN(0), new BN(0), new BN(0), new BN(0), new BN(0), new BN(1_000_000)];
+
+      try {
+        await program.methods
+          .requestPlay(bets, null)
+          .accounts({
+            gameState,
+            pendingPlay: pendingPlay.publicKey,
+            player: player.publicKey,
+            playerTokenAccount,
+            poolTokenAccount,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            vrf: vrf.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .signers([player, pendingPlay])
+          .rpc();
+        expect.fail("应该抛出错误");
+      } catch (error) {
+        expect(error.message).to.include("InvalidBetTable");
+      }
     });
   });
 
@@ -524,7 +526,7 @@ describe("slot_machine_optimized", () => {
     });
 
     it("应该拒绝提取超过奖池余额", async () => {
-      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const gameStateAccount = await (program.account as any).gameState.fetch(gameState);
       const excessAmount = gameStateAccount.totalPool.add(new BN(1000000));
 
       try {
@@ -540,7 +542,7 @@ describe("slot_machine_optimized", () => {
           .rpc();
         expect.fail("应该抛出错误");
       } catch (error) {
-        expect(error.message).to.include("InsufficientFunds");
+        expect(error.message).to.include("InsufficientPool");
       }
     });
   });
@@ -570,25 +572,110 @@ describe("slot_machine_optimized", () => {
       }
     });
 
-    it("应该拒绝使用无效房卡号", async () => {
-      const bets = [new BN(1_000_000), new BN(0), new BN(0), new BN(0), new BN(0), new BN(0)];
-      const invalidRoomCard = 99999;
+    it("request_play 应拒绝总下注为 0", async () => {
+      const pendingPlay = Keypair.generate();
+      const bets = [new BN(0), new BN(0), new BN(0), new BN(0), new BN(0), new BN(0)];
 
       try {
         await program.methods
-          .play(bets, new BN(invalidRoomCard))
+          .requestPlay(bets, null)
           .accounts({
             gameState,
+            pendingPlay: pendingPlay.publicKey,
             player: player.publicKey,
             playerTokenAccount,
             poolTokenAccount,
             tokenProgram: TOKEN_PROGRAM_ID,
+            vrf: vrf.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
           })
-          .signers([player])
+          .signers([player, pendingPlay])
           .rpc();
         expect.fail("应该抛出错误");
       } catch (error) {
-        expect(error.message).to.include("InvalidRoomCard");
+        expect(error.message).to.include("InvalidAmount");
+      }
+    });
+
+    it("request_play 应拒绝低于最低下注额", async () => {
+      await program.methods
+        .setMinBet(new BN(2_000_000))
+        .accounts({
+          gameState,
+          owner: owner.publicKey,
+        })
+        .rpc();
+
+      const pendingPlay = Keypair.generate();
+      const bets = [new BN(1_000_000), new BN(0), new BN(0), new BN(0), new BN(0), new BN(0)];
+
+      try {
+        await program.methods
+          .requestPlay(bets, null)
+          .accounts({
+            gameState,
+            pendingPlay: pendingPlay.publicKey,
+            player: player.publicKey,
+            playerTokenAccount,
+            poolTokenAccount,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            vrf: vrf.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .signers([player, pendingPlay])
+          .rpc();
+        expect.fail("应该抛出错误");
+      } catch (error) {
+        expect(error.message).to.include("BetBelowMinimum");
+      } finally {
+        await program.methods
+          .setMinBet(new BN(1))
+          .accounts({
+            gameState,
+            owner: owner.publicKey,
+          })
+          .rpc();
+      }
+    });
+
+    it("request_play: 逐项校验最低下注额（拆分下注也应拒绝）", async () => {
+      await program.methods
+        .setMinBet(new BN(2_000_000))
+        .accounts({
+          gameState,
+          owner: owner.publicKey,
+        })
+        .rpc();
+
+      const pendingPlay = Keypair.generate();
+      const bets = [new BN(1_000_000), new BN(1_000_000), new BN(0), new BN(0), new BN(0), new BN(0)];
+
+      try {
+        await program.methods
+          .requestPlay(bets, null)
+          .accounts({
+            gameState,
+            pendingPlay: pendingPlay.publicKey,
+            player: player.publicKey,
+            playerTokenAccount,
+            poolTokenAccount,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            vrf: vrf.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .signers([player, pendingPlay])
+          .rpc();
+        expect.fail("应该抛出错误");
+      } catch (error) {
+        expect(error.message).to.include("BetBelowMinimum");
+      } finally {
+        await program.methods
+          .setMinBet(new BN(1))
+          .accounts({
+            gameState,
+            owner: owner.publicKey,
+          })
+          .rpc();
       }
     });
   });

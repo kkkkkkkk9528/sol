@@ -9,7 +9,7 @@
 
 | 依赖 | 版本要求 | 安装方式 |
 |------|----------|----------|
-| Rust | nightly (支持 edition2024) | rustup |
+Rust/Cargo: 1.95.0-nightly (支持edition2024)
 | Solana CLI | v2.2.12 | agave-install |
 | Anchor CLI | 0.30.1 | avm |
 | platform-tools | v1.51 | Solana CLI 自动安装 |

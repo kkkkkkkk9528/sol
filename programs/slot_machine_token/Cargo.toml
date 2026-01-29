@@ -1,12 +1,13 @@
 [package]
-name = "slot_machine"
+name = "slot_machine_token"
 version = "0.1.0"
 description = "Created with Anchor"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "slot_machine"
+name = "slot_machine_token"
+path = "src/token.rs"
 
 [features]
 default = []
@@ -24,11 +25,3 @@ unexpected_cfgs = "allow"
 anchor-lang = "=0.30.1"
 anchor-spl = "=0.30.1"
 mpl-token-metadata = "=5.1.1"
-switchboard-solana = "0.30.4"
-
-[dev-dependencies]
-solana-program = "=1.18.26"
-solana-program-test = "=1.18.26"
-solana-sdk = "=1.18.26"
-spl-token = { version = "=4.0.0", features = ["no-entrypoint"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
